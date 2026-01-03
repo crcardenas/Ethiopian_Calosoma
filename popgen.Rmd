@@ -1,0 +1,458 @@
+---
+title: "Prelim_stats"
+author: "Cody Raul Cardenas"
+date: "2025-07-31"
+output: html_document
+---
+
+```{r setup}
+#, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(adegenet) #installed
+library(hierfstat) #installed
+library(vcfR) #installed
+library(dplyr) #installed
+library(readr) #installed
+library(pegas) #installed
+library(poppr) #installed_
+library(geodist) # installed
+# library(fields) # may not be necessary
+# library(geosphere) # may not be necessary
+library(ade4) # installed
+library(ggplot2) # installed
+library(RColorBrewer) # installed
+library(reshape2) # installed
+library(scales) # installed
+library(igraph) # installed
+library(plotly) # 3d PCA
+setwd("~/Research/manuscripts/Ethiopia/2_popHyRAD_arrowi")
+getwd()
+```
+
+
+# load gestroi data
+
+```{r}
+# vcftools filtering used: --max-alleles 2 --min-alleles 2 --minDP 6 --thin 200 --max-missing 0.5 --remove-indels
+d.vcfR <- vcfR::read.vcfR("popgen_Ethiopia_haplotypes_arrowi_ref_maxmiss0.5_thin1000_keeps.vcf.recode.vcf")
+d.gind <- vcfR::vcfR2genind(d.vcfR)
+popinf <- read_csv("ethiopia_data-popgen_justgestroi.csv")
+strata(d.gind) <- popinf %>% dplyr::select(code1, taxa_code, lon, lat, elv_m, Div3_code,lon,lat,Div1_code,Div3_code,Div4_broad,site,mountain,cluster)
+strata(d.gind)
+# set populatoin factor of genind object
+setPop(d.gind) <- ~Div3_code
+```
+
+
+Create a structure object
+```{r}
+genind2structure <- function(obj, file="", pops=FALSE){
+  if(!"genind" %in% class(obj)){
+    warning("Function was designed for genind objects.")
+  }
+  
+  # get the max ploidy of the dataset
+  pl <- max(obj@ploidy)
+  # get the number of individuals
+  S <- adegenet::nInd(obj)
+  # column of individual names to write; set up data.frame
+  tab <- data.frame(ind=rep(adegenet::indNames(obj), each=pl))
+  # column of pop ids to write
+  if(pops){
+    popnums <- 1:adegenet::nPop(obj)
+    names(popnums) <- as.character(unique(adegenet::pop(obj)))
+    popcol <- rep(popnums[as.character(adegenet::pop(obj))], each=pl)
+    tab <- cbind(tab, data.frame(pop=popcol))
+  }
+  loci <- adegenet::locNames(obj) 
+  # add columns for genotypes
+  tab <- cbind(tab, matrix(-9, nrow=dim(tab)[1], ncol=adegenet::nLoc(obj),
+                           dimnames=list(NULL,loci)))
+  
+  # begin going through loci
+  for(L in loci){
+    thesegen <- obj@tab[,grep(paste("^", L, "\\.", sep=""), 
+                              dimnames(obj@tab)[[2]]), 
+                        drop = FALSE] # genotypes by locus
+    al <- 1:dim(thesegen)[2] # numbered alleles
+    for(s in 1:S){
+      if(all(!is.na(thesegen[s,]))){
+        tabrows <- (1:dim(tab)[1])[tab[[1]] == adegenet::indNames(obj)[s]] # index of rows in output to write to
+        tabrows <- tabrows[1:sum(thesegen[s,])] # subset if this is lower ploidy than max ploidy
+        tab[tabrows,L] <- rep(al, times = thesegen[s,])
+      }
+    }
+  }
+  
+  # export table
+  write.table(tab, file=file, sep="\t", quote=FALSE, row.names=FALSE)
+}
+```
+
+make file
+```{r}
+genind2structure(d.gind, file="gestroi.str", pops = T)
+```
+
+
+
+## Prelim analysis
+
+
+```{r}
+d.genind.summary <- adegenet::summary(d.gind) 
+plot(d.genind.summary$Hexp, d.genind.summary$Hobs,
+     ylab="heterozygosity observed", 
+     xlab="heterozygosity expected",
+     main="Het. Expected vs Het. Observed")
+abline(a=0,b=1,col="blue")
+```
+
+Lets check if Heterozygostiy observed deviates from the heterozygosity expected 
+H0: Hexp = Hobs
+H1: Hexp =/= Hobs
+```{r}
+bartlett.test(list(d.genind.summary$Hexp,d.genind.summary$Hobs))
+```
+
+# PCA_all
+```{r}
+pca.all <- read_table2("plink/popgen_Ethiopia_gestroi_only_AllSNPs.eigenvec", col_names = FALSE)
+eigenval.all <- scan("plink/popgen_Ethiopia_gestroi_only_AllSNPs.eigenval")
+pca.all <- pca.all[,-1]
+names(pca.all)[1] <- "ind"
+names(pca.all)[2:ncol(pca.all)] <- paste0("PC", 1:(ncol(pca.all)-1))
+loc.all <- rep(NA,length(pca.all$ind))
+loc.all <- popinf$Div3_code # assumes that PCa is in the same order as popinf ! (it should be)
+pca.all <- as_tibble(tibble(pca.all,loc.all))
+pve.all <- data.frame(PC = 1:20, pve.all = eigenval.all/sum(eigenval.all)*100)
+a.all <- ggplot(pve.all, aes(PC, pve.all)) + geom_bar(stat = "identity")
+a.all + ylab("Percentage variance explained") + theme_light()
+# plot PCA
+pallet <- c("#04A3BDFF", "#F0BE3DFF", "#931E18FF", 
+            "#DA7901FF", "#247D3FFF", "#20235BFF")
+colScale <- scale_colour_manual(name="loc",values=c("#04A3BDFF", "#F0BE3DFF", 
+                                                    "#931E18FF", "#DA7901FF", 
+                                                    "#247D3FFF", "#20235BFF"))
+
+b <- ggplot(pca.all, aes(PC1, PC2, col = loc, label = ind)) + 
+  geom_point(size = 3) + colScale#+ geom_text(hjust=0.5, vjust=1.5)
+b <- b + theme_light() + ggforce::geom_mark_ellipse(aes(label=NULL)) + coord_equal() #$stat_ellipse(level = 0.95) #uncertainty ellipses is not the same here just circle localities # have to turn off label otherwise the ellipsis's get labeled
+b + xlab(paste0("PC1 (", signif(pve.all$pve.all[1], 3), "%)")) + 
+  ylab(paste0("PC2 (", signif(pve.all$pve.all[2], 3), "%)"))+
+  geom_text(label = pca.all$ind) +
+  theme(aspect.ratio=1)
+
+c <- ggplot(pca.all, aes(PC1, PC3, col = loc, label = ind)) + 
+  geom_point(size = 3) + colScale #+ geom_text(hjust=0.5, vjust=0.8)
+c <- c + coord_equal() + theme_light() + ggforce::geom_mark_ellipse(aes(label=NULL))
+c + xlab(paste0("PC1 (", signif(pve.all$pve.all[1], 3), "%)")) + 
+  ylab(paste0("PC3 (", signif(pve.all$pve.all[3], 3), "%)")) +
+   geom_text(label = pca.all$ind) +
+  theme(aspect.ratio=1)
+```
+
+allsnps_PC1_PC2.pdf
+# PCA_thin
+Examine the PLINK PCA with the filtered dataset
+
+```{r}
+# load & process data
+pca <- read_table2("plink/popgen_ehtiopia_gestroi_only.eigenvec", col_names = FALSE)
+eigenval <- scan("plink/popgen_ehtiopia_gestroi_only.eigenval")
+
+# sort out the pca data
+# remove nuisance column
+pca <- pca[,-1]
+
+# set names
+names(pca)[1] <- "ind"
+names(pca)[2:ncol(pca)] <- paste0("PC", 1:(ncol(pca)-1))
+
+# since we have only one species here, lets add locality data only
+loc <- rep(NA,length(pca$ind))
+loc <- popinf$Div3_code # assumes that PCa is in the same order as popinf ! (it should be)
+
+# make dataframe
+pca <- as_tibble(tibble(pca,loc))
+
+# start processing data
+pve <- data.frame(PC = 1:20, pve = eigenval/sum(eigenval)*100)
+a <- ggplot(pve, aes(PC, pve)) + geom_bar(stat = "identity")
+a + ylab("Percentage variance explained") + theme_light()
+
+#culmulative sum of variance explained
+cumsum(pve$pve)
+
+# plot PCA
+pallet <- c("#04A3BDFF", "#F0BE3DFF", "#931E18FF", 
+            "#DA7901FF", "#247D3FFF", "#20235BFF")
+colScale <- scale_colour_manual(name="loc",values=c("#04A3BDFF", "#F0BE3DFF", 
+                                                    "#931E18FF", "#DA7901FF", 
+                                                    "#247D3FFF", "#20235BFF"))
+
+b <- ggplot(pca, aes(PC1, PC2, col = loc, label = ind)) + 
+  geom_point(size = 3) + colScale#+ geom_text(hjust=0.5, vjust=1.5)
+b <- b + coord_equal() + theme_light() + ggforce::geom_mark_ellipse(aes(label=NULL))#+ stat_ellipse(level = 0.85) uncertainty ellipses is not the same here just circle localities # have to turn off label otherwise the ellipsis's get labeled
+b + xlab(paste0("PC1 (", signif(pve$pve[1], 3), "%)")) + 
+  ylab(paste0("PC2 (", signif(pve$pve[2], 3), "%)"))+
+  geom_text(label = pca$ind) +
+  theme(aspect.ratio=1)
+  
+```
+
+```{r}
+c <- ggplot(pca, aes(PC1, PC3, col = loc, label = ind)) + 
+  geom_point(size = 3) + colScale #+ geom_text(hjust=0.5, vjust=0.8)
+c <- c + coord_equal() + theme_light() + ggforce::geom_mark_ellipse(aes(label=NULL))
+c + xlab(paste0("PC1 (", signif(pve$pve[1], 3), "%)")) + ylab(paste0("PC3 (", signif(pve$pve[3], 3), "%)")) +
+   geom_text(label = pca$ind) +
+  theme(aspect.ratio=1)
+```
+
+## Population Statistics
+
+```{r}
+# some code is turned off because it was already run, and will slow down
+# markdown output
+hwtestall.gest <- pegas::hw.test(d.gind, B=1000) # estimate HWE across all samples
+all_HWE.gest = sum(hwtestall.gest[,3]>0.05)/length(hwtestall.gest[,3]) # get percentage of loci in HWE
+# 89.07 % of the SNP's are in HWE
+
+# % of loci in HWE, and removed for new data set
+#loc2keep.gest <- hwtestall.gest[,3]>0.05
+# not filtering by HWE, just curious of the proportion of data in HWE here. 
+# if we filter by HWE we remove too many loci and may artificially introduce
+# neutral loci by forcing only HWE loci. Global removal of loci in HWE is not 
+# the move and could bias resul
+
+d.hier <- genind2hierfstat(d.gind)
+d.basic <- basic.stats(d.hier)
+d.basic$overall
+
+#  pairwise FST
+d.WCfstpairwise <- hierfstat::pairwise.WCfst(d.hier)
+d.WCfstpairwise
+```
+summarize the distribution of values...
+
+
+```{r}
+
+tmp <- cbind(Locus = rownames(d.basic$perloc),d.basic$perloc)
+per.locus <- melt(d.basic$perloc, id.vars=d.basic$perloc[,1], variable.name = "Statistic", 
+                  value.name = "Value")
+  
+stats <- c("Ho","Hs","Ht","Dst","Htp","Dstp","Fst","Fstp","Fis","Dest")
+glob <- data.frame(Statistic = stats, Value = d.basic$overall)
+stats_perlocus <- ggplot(per.locus, aes(x=Statistic, y=Value)) +
+  geom_boxplot() +# geom_jitter(width=0.2) +
+  geom_point() +
+  geom_point(size=rel(3),color="red",data=glob) +
+  ylim(-1.25,1) + ggtitle("All samples")
+stats_perlocus
+```
+
+OKAY NEAT, based on that one paper I found, the loci with Fst values <= 0 should probably be removed
+they dont have the resolution to accurately estimate the popgen statistics, due to a variety of potential factors.
+
+```{r}
+filter <- d.basic$perloc %>% dplyr::filter(Fst > 0, !is.na(Fst))
+# leaves only 74 loci... yikes... 
+```
+
+
+Per locality summary statistics
+
+```{r}
+BaleMN.hier <- d.gind[pop(d.gind) == "BalMN"] %>% genind2hierfstat()
+BaleMS.hier <-d.gind[pop(d.gind) == "BalMS"] %>% genind2hierfstat()
+BaleMW.hier <- d.gind[pop(d.gind) == "BalMW"] %>% genind2hierfstat()
+MtKak.hier <- d.gind[pop(d.gind) == "MtKak"] %>% genind2hierfstat()
+MtChi.hier <- d.gind[pop(d.gind) == "MtChi"] %>% genind2hierfstat()
+GugHi.hier <- d.gind[pop(d.gind) == "GugHi"] %>% genind2hierfstat()
+
+print("global")
+d.basic$overall
+print("BalMN")
+basic.BaleMN.hier <- basic.stats(BaleMN.hier)
+basic.BaleMN.hier$overall
+print("BalMS")
+basic.BaleMS.hier <- basic.stats(BaleMS.hier)
+basic.BaleMS.hier$overall
+print("BalMW")
+basic.BaleMW.hier <- basic.stats(BaleMW.hier)
+basic.BaleMW.hier$overall
+print("MtKak")
+basic.MtKak.hier <- basic.stats(MtKak.hier)
+basic.MtKak.hier$overall
+print("MtChi")
+basic.MtChi.hier <- basic.stats(MtChi.hier)
+basic.MtChi.hier$overall
+ basic.GugHi.hier <- basic.stats(GugHi.hier)
+ basic.GugHi.hier$overall
+
+#write a csv
+
+# Create a named list of the $overall vectors
+overall_list <- list(
+  Global = d.basic$overall,
+  BaleMN = basic.BaleMN.hier$overall,
+  BaleMS = basic.BaleMS.hier$overall,
+  BaleMW = basic.BaleMW.hier$overall,
+  MtKak = basic.MtKak.hier$overall,
+  MtChi = basic.MtChi.hier$overall,
+  GugHi = basic.GugHi.hier$overall
+)
+
+# Convert list to data frame
+overall_df <- do.call(rbind, overall_list)
+
+# Add a column for population names
+overall_df <- data.frame(Population = rownames(overall_df), overall_df, row.names = NULL)
+
+# Write to CSV
+write.csv(overall_df, file = "heirfstat_overall_stats.csv", row.names = FALSE)
+
+```
+
+
+
+This step really highlights that we will likely needed  to remove GugHi samples from the downstream analyses. Primarily because any estimates from a site represented by two samples is likely to return spurious results. 
+```{r}
+table(popinf$Div3_code)
+```
+
+
+```{r}
+# get centroid point from coordinates
+dist_bymt <- data.frame()
+dist_bymt[c("BalMN","MtChi","BalMS","BalMW","MtKak"),c("lon","lat")] <- NA
+
+dis.BalMtN <- popinf %>% dplyr::filter(Div3_code=="BalMN") %>% dplyr::select(lon,lat) #this gets the xycoords of BalMt
+dis.BalMtN <- sapply(dis.BalMtN,jitter,amount=0.000001) # jitter functionrm
+dist_bymt["BalMN",] <- geosphere::centroid(dis.BalMtN) # this gives us the geographic centroid
+
+dis.BalMtS <- popinf %>% dplyr::filter(Div3_code=="BalMS") %>% dplyr::select(lon,lat) #this gets the xycoords of BalMt
+dis.BalMtS <- sapply(dis.BalMtS,jitter,amount=0.000001) # jitter function
+dist_bymt["BalMS",] <- geosphere::centroid(dis.BalMtS) # this gives us the geographic centroid
+
+dis.BalMtW <- popinf %>% dplyr::filter(Div3_code=="BalMW") %>% dplyr::select(lon,lat) #this gets the xycoords of BalMt
+dis.BalMtW <- sapply(dis.BalMtW,jitter,amount=0.000001) # jitter function
+dist_bymt["BalMW",] <- geosphere::centroid(dis.BalMtW) # this gives us the geographic centroid
+
+dis.MtChi <- popinf %>% dplyr::filter(Div3_code=="MtChi") %>% dplyr::select(lon,lat) # MtChino des cruces has ALL the same geocord
+dis.MtChi <- sapply(dis.MtChi,jitter,amount=0.000001)
+dist_bymt["MtChi",] <- dis.MtChi[1,]
+
+dis.MtKak <- popinf %>% dplyr::filter(Div3_code=="MtKak") %>% dplyr::select(lon,lat) # MtKaks Div3_code has ALL the same geocord
+dis.MtKak <- sapply(dis.MtKak,jitter,amount=0.000001)
+dist_bymt["MtKak",] <- dis.MtKak[1,] 
+
+dis.GugHi <- popinf %>% dplyr::filter(Div3_code=="GugHi") %>% dplyr::select(lon,lat) # MtKaks Div3_code has ALL the same geocord
+dis.GugHi  <- sapply(dis.GugHi ,jitter,amount=0.000001)
+dist_bymt["GugHi",] <- dis.GugHi[1,] 
+
+d.geodist <- geosphere::distm(dist_bymt, fun=geosphere::distGeo)/1000 # in Km
+
+d.pairwise_geo_fst <- matrix(NA,nrow=6,ncol=6)
+d.pairwise_geo_fst[upper.tri(d.pairwise_geo_fst)] <- d.geodist[upper.tri(d.geodist)] 
+d.pairwise_geo_fst[lower.tri(d.pairwise_geo_fst)] <- d.WCfstpairwise[lower.tri(d.WCfstpairwise)]
+# add header info
+rownames(d.pairwise_geo_fst) <- popinf$Div3_code %>% unique()
+colnames(d.pairwise_geo_fst) <- popinf$Div3_code %>% unique()
+d.pairwise_geo_fst
+write.table(d.pairwise_geo_fst, file='d.pairwise_geo_fst_withHWE.tsv', quote=FALSE, sep='\t', col.names = NA)
+```
+Here upper triangle is geographic distances in Km, lower is Fst Values. Negative Fst values indicate we dont have the sampling power to accruately make pairwise comparisons between MtChi and MtKak. Or given the high levels of inbreeding here its likely there has, again, been admixture. This makes seems like a reasonable inference given the geographic closeness. On that note, think about IBD.
+
+
+Maybe a plot of Fst by distance makes sense, lets convert these values to something more plot-able
+
+```{r}
+#tmp_fst <- upper.tri(d2.pairwise_geo_fst,diag=F)
+#tmp_km <- upper.tri(d2.geodist,diag=F)
+
+tmp_fst <- which(upper.tri(d.WCfstpairwise,diag=F), arr.in=T) # should also try doing Jeremy's (1-Fst)/Fst function
+tmp_km <- which(upper.tri(d.geodist,diag=F), arr.ind = T)
+
+#CHECK THAT ROWS ARE EQUAL!
+setequal(tmp_fst, tmp_km)
+#if TRUE continue
+
+tmp2_fst <- cbind(tmp_fst, d.WCfstpairwise[tmp_fst]) %>% as.data.frame() %>% dplyr::select(V3)
+# set  Fst values to 0; which is indicative of shit sampling:
+  # https://onlinelibrary.wiley.com/doi/10.1111/j.1365-294X.2010.04784.x
+
+tmp2_km <- cbind(tmp_km, d.geodist[tmp_km]) %>% as.data.frame() %>% dplyr::select(V3)
+
+d.long.pairwise_geo_fst <- merge(tmp2_km,tmp2_fst,by = 0) %>% mutate(Km = V3.x, Fst = V3.y) %>% dplyr::select(Km,Fst)
+# quality of life thing, need to label so we can add local comparisons to plot
+d.long.pariwise_geo_fst.p <- d.long.pairwise_geo_fst %>%  ggplot(aes(x=Km,y=Fst,label=)) +
+  geom_point() + geom_smooth(method = lm, se=T, color="darkgreen") +
+  ggtitle("pairwise distance estimate all")
+d.long.pariwise_geo_fst.p
+
+d.ibd <- lm(formula= Fst ~ Km, data=d.long.pairwise_geo_fst)
+summary(d.ibd)$r.squared
+
+#gridExtra::grid.arrange(d.long.pairwise_geo_fst,d.long.pairwise_geo_fst0,nrow=1)
+```
+
+
+
+## AMOVA
+
+```{r}
+AMOVA <- poppr::poppr.amova(d.gind, ~site, # formula
+                    cutoff=0.5, within = T, # given we still have missing data, look at w/in variance too
+                    # but it throws a warning, nothing changes if you change it to false
+                    clonecorrect = F, nperm=10000)
+AMOVA
+
+sig <- randtest(AMOVA, nrepet = 10000) 
+sig
+plot(sig )
+```
+
+
+```{r}
+AMOVA.mnt <- poppr::poppr.amova(d.gind, ~mountain/site, # formula
+                    cutoff=0.5, within = T, # given we still have missing data, look at w/in variance too
+                    # but it throws a warning, nothing changes if you change it to false
+                    clonecorrect = F, nperm=10000)
+AMOVA.mnt
+
+sig.mnt <- randtest(AMOVA.mnt, nrepet = 10000) 
+sig.mnt
+plot(sig.mnt)
+```
+We expect variations within samples to give the greatest amount of variation for populations that are not significantly differentiated. (look at $compvar)
+
+But variation between mountain does not have a normal distribution!? Lets try the clusters based on the structure analysis
+```{r}
+AMOVA.clust <- poppr::poppr.amova(d.gind, ~cluster/site, # formula
+                    cutoff=0.5, within = T, # given we still have missing data, look at w/in variance too
+                    # but it throws a warning, nothing changes if you change it to false
+                    clonecorrect = F, nperm=10000)
+AMOVA.clust
+
+sig.clust <- randtest(AMOVA.clust, nrepet = 10000) 
+sig.clust
+plot(sig.clust)
+```
+
+Here is a summary of the tables used for the AMOVA analyses
+For the cluster colors refer to Structure analysis! The clusters are "loose" and 
+```{r}
+table(strata(d.gind, ~site))
+
+table(strata(d.gind, ~mountain/site, combine = FALSE)) %>% write.csv(file="amova_mountain_counts.csv")
+
+# even though cluster has the most significant variation, probably shouldn't use the clusters, the assignment is poroportional, How do you handle samples that have 45% cluster 1, 35% cluster 2, and 20% in cluster 3?
+table(strata(d.gind, ~cluster/site, combine = FALSE))
+```
+
+
+keep in mind when doing structure, we still likely have too few SNP's for accurate estimtes with Gughi Highlands, so we will need to perform 2 analyses, 1 with and 1 without gughi samples (800 is < 1500)
+10.1111/1755-0998.12654
